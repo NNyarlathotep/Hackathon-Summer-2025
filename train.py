@@ -47,6 +47,8 @@ from typing import List, Tuple, Dict, Optional
 
 import numpy as np
 import pandas as pd
+import pickle
+import hashlib
 
 import torch
 import torch.nn as nn
@@ -138,6 +140,73 @@ def build_samples(df: pd.DataFrame) -> Tuple[List[Tuple[str, str, str]], Dict[st
     if len(samples) == 0:
         raise RuntimeError("No usable samples found. Ensure single-ctrl columns exist for doubles.")
     return samples, cache
+
+
+def _file_signature(path: str) -> Dict[str, float]:
+    try:
+        st = os.stat(path)
+        return {"size": float(st.st_size), "mtime": float(st.st_mtime)}
+    except FileNotFoundError:
+        return {"size": -1.0, "mtime": -1.0}
+
+
+def _cache_path_for(csv_path: str, cache_dir: str) -> str:
+    os.makedirs(cache_dir, exist_ok=True)
+    key = hashlib.md5(os.path.abspath(csv_path).encode("utf-8")).hexdigest()[:10]
+    base = os.path.basename(csv_path)
+    return os.path.join(cache_dir, f"{base}.{key}.pkl")
+
+
+def load_or_build_cache(csv_path: str, cache_dir: str) -> Dict[str, object]:
+    """Return cached dataset dict, building it if missing or stale.
+
+    Returns keys: data (np.float32 GxC), columns (List[str]), genes (np.ndarray[str]),
+                  samples (List[Tuple[str,str,str]]), baseline_vec (np.ndarray), baseline_source (str),
+                  raw_shape (Tuple[int,int]), collapsed_shape (Tuple[int,int])
+    """
+    path = _cache_path_for(csv_path, cache_dir)
+    sig = _file_signature(csv_path)
+    if os.path.isfile(path):
+        try:
+            with open(path, "rb") as f:
+                obj = pickle.load(f)
+            if obj.get("sig") == sig and obj.get("version") == 1:
+                return obj
+        except Exception:
+            pass  # fall through to rebuild
+
+    # Build fresh
+    raw_df = pd.read_csv(csv_path, index_col=0, low_memory=False)
+    df = collapse_replicates(raw_df)
+    baseline_vec_np, baseline_src = find_baseline_ctrl(df)
+    samples, _ = build_samples(df)
+
+    obj = {
+        "version": 1,
+        "csv_path": os.path.abspath(csv_path),
+        "sig": sig,
+        "raw_shape": tuple(raw_df.shape),
+        "collapsed_shape": tuple(df.shape),
+        "columns": list(df.columns),
+        "genes": df.index.astype(str).to_numpy(),
+        "data": df.to_numpy(dtype=np.float32, copy=True),
+        "samples": samples,
+        "baseline_vec": baseline_vec_np.astype(np.float32),
+        "baseline_source": baseline_src,
+    }
+    # atomic write
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "wb") as f:
+            pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except Exception:
+            pass
+    return obj
 
 
 class DoublePerturbDataset(Dataset):
@@ -325,10 +394,12 @@ def main():
     ap.add_argument('--dropout', type=float, default=0.1)
     ap.add_argument('--lr', type=float, default=1e-3)
     ap.add_argument('--weight_decay', type=float, default=1e-4)
-    ap.add_argument('--val_ratio', type=float, default=0.2)
+    ap.add_argument('--val_ratio', type=float, default=0.1)
     ap.add_argument('--seed', type=int, default=42)
     ap.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu')
     ap.add_argument('--out_dir', type=str, default=None)
+    ap.add_argument('--cache_dir', type=str, default='cache', help='Directory to store/load preprocessed cache')
+    ap.add_argument('--no_cache', action='store_true', help='Disable dataset caching and force CSV parse')
 
     # Features & losses
     ap.add_argument('--features', type=str, default='base+baseline+interact', help='Combine: base, baseline, interact')
@@ -347,17 +418,27 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     print(f"Loading: {args.csv}")
-    # 将第一列（基因 ID，如 g0001）作为行索引，避免被当作数值列参与计算
-    raw_df = pd.read_csv(args.csv, index_col=0, low_memory=False)
-    print(f"Raw shape: {raw_df.shape}")
-    df = collapse_replicates(raw_df)
-    print(f"Collapsed shape: {df.shape}")
-    samples, cache = build_samples(df)
-    print(f"Usable samples: {len(samples)}")
-
-    # Baseline
-    baseline_vec_np, baseline_src = find_baseline_ctrl(df)
-    print(f"Baseline source: {baseline_src}")
+    if args.no_cache:
+        # Fallback: original slow path
+        raw_df = pd.read_csv(args.csv, index_col=0, low_memory=False)
+        print(f"Raw shape: {raw_df.shape}")
+        df = collapse_replicates(raw_df)
+        print(f"Collapsed shape: {df.shape}")
+        samples, cache = build_samples(df)
+        print(f"Usable samples: {len(samples)}")
+        baseline_vec_np, baseline_src = find_baseline_ctrl(df)
+        print(f"Baseline source: {baseline_src}")
+    else:
+        ds = load_or_build_cache(args.csv, args.cache_dir)
+        data = ds["data"]; columns = ds["columns"]; genes_idx = ds["genes"]
+        samples = ds["samples"]
+        baseline_vec_np = ds["baseline_vec"]; baseline_src = ds["baseline_source"]
+        print(f"Raw shape: {tuple(ds['raw_shape'])}")
+        print(f"Collapsed shape: {tuple(ds['collapsed_shape'])}")
+        print(f"Usable samples: {len(samples)}")
+        print(f"Baseline source: {baseline_src}")
+        # Reconstruct cache mapping col -> vector view
+        cache = {c: data[:, i] for i, c in enumerate(columns)}
 
     # Shuffle & split
     rng = np.random.default_rng(args.seed)

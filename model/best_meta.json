@@ -1,0 +1,16 @@
+{
+  "best_val_rmsd": 0.0914466455578804,
+  "out_dir": "runs\\20250822_174423_T414",
+  "params": {
+    "hidden": 128,
+    "depth": 2,
+    "dropout": 0.169,
+    "lr": 0.0028827653914908114,
+    "weight_decay": 0.0009813132894777843,
+    "batch_size": 14,
+    "corr_w": 0.03,
+    "features": "base+interact"
+  },
+  "timestamp": "20250822_174428",
+  "trial": 414
+}
