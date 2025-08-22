@@ -1,39 +1,41 @@
 # Leaderboard for GIDS Biomedical Data Hackathon 2025
 
--   **time stamp:** “21 August, 2025 15:00:21”
+-   **time stamp:** “22 August, 2025 15:36:17”
 
 | pseudonym              |    RMSD |
 |:-----------------------|--------:|
-| NoahStefancik          | 0.14276 |
-| The Bros               | 0.14832 |
-| cosmo                  | 0.14871 |
-| Euchromatin            | 0.15222 |
-| Kill Bill              | 0.15992 |
+| NoahStefancik          | 0.14255 |
+| UMAP my heart          | 0.14320 |
+| The Mighty-condrion    | 0.14401 |
+| The Bros               | 0.14484 |
+| Transcriptonaughts     | 0.14676 |
+| MM                     | 0.15059 |
+| Euchromatin            | 0.15099 |
+| LNCLLM                 | 0.15369 |
+| EEG                    | 0.15569 |
+| Nyarlathotep           | 0.15672 |
+| cosmo                  | 0.16524 |
 | 60hahsm                | 0.16570 |
-| Alpha Groundhog        | 0.16825 |
-| LNCLLM                 | 0.16995 |
-| Regression Renaissance | 0.17627 |
-| EEG                    | 0.18079 |
-| ms ds duo              | 0.18295 |
-| UMAP my heart          | 0.18764 |
-| The Mighty-condrion    | 0.18912 |
-| Transcriptonaughts     | 0.19185 |
-| RNAnalytics            | 0.19231 |
-| BOMN                   | 0.21411 |
-| Flageolets             | 0.21582 |
-| Caiman                 | 0.31368 |
+| Kill Bill              | 0.16959 |
+| Caiman                 | 0.17644 |
+| RNAnalytics            | 0.18597 |
+| Flageolets             | 0.19270 |
+| Alpha Groundhog        | 0.19881 |
+| ms ds duo              | 0.21560 |
+| Regression Renaissance | 0.25275 |
+| BOMN                   | 0.25671 |
+| KgP                    | 0.30651 |
+| acid                   | 0.31368 |
+| AMA                    | 0.32384 |
 | The real science       | 0.36163 |
-| joshpredicts           | 0.83926 |
+| joshpredicts           | 1.36622 |
+| HuaweiPower            | 1.44055 |
 | fish                   | 1.51101 |
 | FLY                    | 2.39148 |
 | YEAST                  | 2.39148 |
-| DnDCrew                | 2.39148 |
 | CookieMonster          | 2.39148 |
 | Name Undefined         | 2.39148 |
 | Pomodoro               | 2.39148 |
-| AMA                    | 2.39148 |
-| acid                   | 2.39148 |
-| Nyarlathotep           | 2.39148 |
 
 ***Scoring:***
 
@@ -56,24 +58,22 @@ Please read instructions carefully.*
 
 | pseudonym       |
 |:----------------|
-| JCBWTBK         |
+| DnDCrew         |
 | SCSH            |
 | MGJLTA          |
 | confused_coder  |
 | Recursion       |
 | Peanutbutterman |
-| MM               |
 | m               |
 | Al Ahly 07      |
 | monkey2         |
 | ES              |
-| HuaweiPower     |
 | Wash Wizards    |
 | loopie          |
 | Tit for tat     |
 | Rotationmatrix  |
 | Spencer         |
 | anonymous5.5    |
-| KgP             |
 | Tomato          |
 | WorkInProgress  |
+| newbie          |
