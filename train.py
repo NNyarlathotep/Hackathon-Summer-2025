@@ -6,29 +6,38 @@ Enhanced supervised training script for predicting double-perturbation expressio
 
 Improvements added:
 1) Richer input features (toggle via --features):
-   - base:        [xA, xB]
-   - +baseline:   [xA, xB, baseline]
-   - +interact:   add |xA-xB|, xA*xB, (xA+xB)/2
-   => e.g. --features base+baseline+interact
+    - base:        [xA, xB]
+    - +baseline:   [xA, xB, baseline]
+    - +interact:   add |xA-xB|, xA*xB, (xA+xB)/2
+    => e.g. --features base+baseline+interact
 
 2) Hybrid loss with correlation regularization (toggle via --corr_w):
-   - loss = MSE + corr_w * (1 - PearsonCorr(y_hat, y))
-   - Corr is computed per sample across genes, then averaged across batch.
+    - loss = MSE + corr_w * (1 - PearsonCorr(y_hat, y))
+    - Corr is computed per sample across genes, then averaged across batch.
 
-3) Flexible F1 thresholding (toggle via --threshold_mode):
-   - quantile:  tau = Quantile(|y-baseline|) on train (default; --quantile)
-   - absolute:  tau = --abs_tau (e.g., 0.5)
-   - youden:    sweep taus on train to maximize F1 (Youden-like grid search)
+3) Thresholding for downstream binarization (optional; not used in RMSD metric):
+    - quantile:  tau = Quantile(|y-baseline|) on train (default; --quantile)
+    - absolute:  tau = --abs_tau (e.g., 0.5)
+    - youden:    heuristic grid over percentiles
 
 4) Optional per-gene weights for MSE (toggle via --gene_weight_csv):
-   - CSV with one column 'weight' (length = #genes in row order) for weighted MSE.
+    - CSV with one column 'weight' (length = #genes in row order) for weighted MSE.
 
 Outputs:
-  - model.pt        : best checkpoint (by val F1)
-  - history.csv     : epoch metrics
-  - f1_curve.png    : F1 curves (train/val)
-  - loss_curve.png  : Loss curves (train/val)
+    - model.pt        : best checkpoint (by lowest val RMSD)
+    - history.csv     : epoch metrics
+    - rmsd_curve.png  : RMSD curves (train/val)
+    - loss_curve.png  : Loss curves (train/val)
 """
+
+# --- OpenMP runtime guard (Windows/libiomp5md.dll duplication) ---
+# Must run BEFORE importing numpy/torch to avoid OMP Error #15.
+import os as _os
+_os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+_os.environ.setdefault("OMP_NUM_THREADS", "1")
+_os.environ.setdefault("MKL_NUM_THREADS", "1")
+_os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+#################################################################
 
 import argparse
 import os
@@ -42,12 +51,6 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-
-try:
-    from sklearn.metrics import f1_score
-    HAVE_SK = True
-except Exception:
-    HAVE_SK = False
 
 import matplotlib
 matplotlib.use('Agg')
@@ -216,48 +219,31 @@ def compute_threshold(train_loader: DataLoader, baseline_vec: np.ndarray, mode: 
         return float(np.quantile(d, quantile))
 
     if mode == 'youden':
-        # grid over percentiles 50->99 step 1, pick best train micro-F1
+        # grid over percentiles 50->99 step 1, select a balanced threshold
         taus = np.percentile(d, np.arange(50, 100, 1))
-        best_tau, best_f1 = taus[0], -1.0
-        # For Youden-like search we need predictions; here we use a naive baseline model (y_hat ~= max(xA, xB)) proxy is not available.
-        # Instead, we choose tau maximizing positive/negative separability using label balance heuristic: maximize 2p(1-p).
-        # As a simple and stable proxy, choose tau closest to median (p≈0.5). Then refine locally by maximizing F1 with identity (y_hat=y) => upper bound.
-        # This keeps threshold selection data-driven without leaking a specific model.
+        best_tau, best_score = taus[0], -1.0
+        # Choose tau maximizing positive/negative separability using label balance heuristic: maximize 2p(1-p)
         for tau in taus:
             p = (d >= tau).mean()
             score = 2 * p * (1 - p)  # balancedness proxy
-            if score > best_f1:
-                best_f1, best_tau = score, tau
+            if score > best_score:
+                best_score, best_tau = score, tau
         return float(best_tau)
 
     raise ValueError(f"Unknown threshold_mode: {mode}")
 
 
-def to_binary(y: torch.Tensor, baseline_vec: torch.Tensor, tau: float) -> torch.Tensor:
-    return (torch.abs(y - baseline_vec) >= tau).to(torch.int64)
+def rmse_metric(y_hat: torch.Tensor, y: torch.Tensor) -> float:
+    # Root Mean Squared Deviation (RMSD) between predictions and targets
+    return float(torch.sqrt(torch.mean((y_hat - y) ** 2)).item())
 
 
-def f1_metric(y_true: torch.Tensor, y_pred: torch.Tensor) -> float:
-    yt = y_true.detach().cpu().numpy().astype(np.int64).ravel()
-    yp = y_pred.detach().cpu().numpy().astype(np.int64).ravel()
-    if HAVE_SK:
-        return float(f1_score(yt, yp, average='micro', zero_division=0))
-    tp = np.sum((yt == 1) & (yp == 1))
-    fp = np.sum((yt == 0) & (yp == 1))
-    fn = np.sum((yt == 1) & (yp == 0))
-    precision = tp / (tp + fp + 1e-8)
-    recall = tp / (tp + fn + 1e-8)
-    if precision + recall == 0:
-        return 0.0
-    return 2 * precision * recall / (precision + recall)
-
-
-def plot_curves(history: pd.DataFrame, f1_path: str, loss_path: str):
+def plot_curves(history: pd.DataFrame, rmsd_path: str, loss_path: str):
     plt.figure(figsize=(7,5))
-    plt.plot(history['epoch'], history['train_f1'], label='train F1')
-    plt.plot(history['epoch'], history['val_f1'], label='val F1')
-    plt.xlabel('Epoch'); plt.ylabel('F1 Score'); plt.title('F1 (train vs val)')
-    plt.legend(); plt.tight_layout(); plt.savefig(f1_path, dpi=150); plt.close()
+    plt.plot(history['epoch'], history['train_rmse'], label='train RMSD')
+    plt.plot(history['epoch'], history['val_rmse'], label='val RMSD')
+    plt.xlabel('Epoch'); plt.ylabel('RMSD'); plt.title('RMSD (train vs val)')
+    plt.legend(); plt.tight_layout(); plt.savefig(rmsd_path, dpi=150); plt.close()
 
     plt.figure(figsize=(7,5))
     plt.plot(history['epoch'], history['train_loss'], label='train loss')
@@ -296,7 +282,7 @@ class WeightedMSE(nn.Module):
 
 def train_epoch(model, loader, optimizer, device, base_loss, corr_w, baseline_vec_t, tau):
     model.train()
-    tot_loss = 0.0; tot_f1 = 0.0; n = 0
+    tot_loss = 0.0; tot_rmse = 0.0; n = 0
     for X, y in loader:
         X = X.to(device); y = y.to(device)
         optimizer.zero_grad()
@@ -307,17 +293,15 @@ def train_epoch(model, loader, optimizer, device, base_loss, corr_w, baseline_ve
         loss.backward(); optimizer.step()
         tot_loss += float(loss.item())
 
-        y_bin = to_binary(y, baseline_vec_t, tau)
-        yhat_bin = to_binary(y_hat, baseline_vec_t, tau)
-        tot_f1 += f1_metric(y_bin, yhat_bin)
+        tot_rmse += rmse_metric(y_hat, y)
         n += 1
-    return tot_loss / max(n,1), tot_f1 / max(n,1)
+    return tot_loss / max(n,1), tot_rmse / max(n,1)
 
 
 @torch.no_grad()
 def eval_epoch(model, loader, device, base_loss, corr_w, baseline_vec_t, tau):
     model.eval()
-    tot_loss = 0.0; tot_f1 = 0.0; n = 0
+    tot_loss = 0.0; tot_rmse = 0.0; n = 0
     for X, y in loader:
         X = X.to(device); y = y.to(device)
         y_hat = model(X)
@@ -326,11 +310,9 @@ def eval_epoch(model, loader, device, base_loss, corr_w, baseline_vec_t, tau):
             loss = loss + corr_w * pearson_corr_loss(y_hat, y)
         tot_loss += float(loss.item())
 
-        y_bin = to_binary(y, baseline_vec_t, tau)
-        yhat_bin = to_binary(y_hat, baseline_vec_t, tau)
-        tot_f1 += f1_metric(y_bin, yhat_bin)
+        tot_rmse += rmse_metric(y_hat, y)
         n += 1
-    return tot_loss / max(n,1), tot_f1 / max(n,1)
+    return tot_loss / max(n,1), tot_rmse / max(n,1)
 
 
 def main():
@@ -422,16 +404,16 @@ def main():
 
     baseline_vec_t = torch.from_numpy(baseline_vec_np).to(device).unsqueeze(0)
 
-    history = []; best_val_f1 = -1.0; best_path = os.path.join(out_dir, 'model.pt')
+    history = []; best_val_rmse = float('inf'); best_path = os.path.join(out_dir, 'model.pt')
     for epoch in range(1, args.epochs+1):
         t0 = time.time()
-        tr_loss, tr_f1 = train_epoch(model, train_loader, optimizer, device, base_loss, args.corr_w, baseline_vec_t, tau)
-        va_loss, va_f1 = eval_epoch(model, val_loader, device, base_loss, args.corr_w, baseline_vec_t, tau)
+        tr_loss, tr_rmse = train_epoch(model, train_loader, optimizer, device, base_loss, args.corr_w, baseline_vec_t, tau)
+        va_loss, va_rmse = eval_epoch(model, val_loader, device, base_loss, args.corr_w, baseline_vec_t, tau)
         dt = time.time() - t0
-        history.append({'epoch': epoch, 'train_loss': tr_loss, 'val_loss': va_loss, 'train_f1': tr_f1, 'val_f1': va_f1, 'time_sec': dt})
-        print(f"Epoch {epoch:03d} | loss {tr_loss:.5f}/{va_loss:.5f} | F1 {tr_f1:.4f}/{va_f1:.4f} | {dt:.1f}s")
-        if va_f1 > best_val_f1:
-            best_val_f1 = va_f1
+        history.append({'epoch': epoch, 'train_loss': tr_loss, 'val_loss': va_loss, 'train_rmse': tr_rmse, 'val_rmse': va_rmse, 'time_sec': dt})
+        print(f"Epoch {epoch:03d} | loss {tr_loss:.5f}/{va_loss:.5f} | RMSD {tr_rmse:.4f}/{va_rmse:.4f} | {dt:.1f}s")
+        if va_rmse < best_val_rmse:
+            best_val_rmse = va_rmse
             torch.save({'model_state': model.state_dict(),
                         'tau': tau,
                         'args': vars(args),
@@ -441,13 +423,13 @@ def main():
     # Save outputs
     hist_df = pd.DataFrame(history)
     hist_csv = os.path.join(out_dir, 'history.csv'); hist_df.to_csv(hist_csv, index=False)
-    f1_png   = os.path.join(out_dir, 'f1_curve.png')
+    rmse_png   = os.path.join(out_dir, 'rmsd_curve.png')
     loss_png = os.path.join(out_dir, 'loss_curve.png')
-    plot_curves(hist_df, f1_png, loss_png)
+    plot_curves(hist_df, rmse_png, loss_png)
 
     print(f"Saved best model: {best_path}")
     print(f"Saved history   : {hist_csv}")
-    print(f"Saved plots     : {f1_png}, {loss_png}")
+    print(f"Saved plots     : {rmse_png}, {loss_png}")
 
 
 if __name__ == '__main__':
